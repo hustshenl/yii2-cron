@@ -18,7 +18,8 @@
     },
     "autoload": {
         "psr-4": {
-            "hustshenl\\cron\\": "src"
+            "hustshenl\\cron\\": "src",
+            "hustshenl\\cron\\Tests": "Tests"
         }
     }
 }
