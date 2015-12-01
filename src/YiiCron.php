@@ -1,173 +1,129 @@
 <?php
     namespace hustshenl\cron;
 
-    use yii\base\Component;
-    use yii\console\Exception;
-
+    use yii\console\Application;
+    use yii\helpers\Inflector;
+    use yii\helpers\Console;
 
     /**
      *
      * Class YiiCron
      * @package hustshenl\cron
      */
-    class YiiCron extends Component{
+    class YiiCron extends Application{
+
+        public function run(){
+
+            if($allActions = $this->getAllActions()){
+                if(!empty($allActions)){
+                    @file_put_contents('consoleTasks',join(" ",$allActions));
+                }
+
+            }
+
+        }
 
         /**
-         * 单例的实例
-         * @var
+         * 获取所有的Action
          */
-        protected static $instance;
+        public function getAllActions(){
+            $allActions = [];
 
-        /**
-         * 程序最大sleep的时间，秒
-         * @var int
-         */
-        public $max_sleep_time = 5;
+            if($commands = $this->getControllers()){
+                foreach($commands as $command  ){
+                    if(!$command) continue;
+                    $result = \Yii::$app->createController($command);
+                    if ($result !== false) {
+                        list($controller, $actionID) = $result;
+                        $actions = $this->getActions($controller);
 
-        /**
-         * 当前定时任务中的任务实例列表
-         * @var array
-         */
-        protected $tasks = [];
-
-        /**
-         * 每一个任务下一次运行时间数组列表
-         * @var array
-         */
-        private $next_time = [];
-
-        /**
-         * 运行任务
-         * @param bool $Single
-         * @return bool
-         */
-        public function handle($Single = true){
-            if(empty($this->tasks)) return false;
-
-            do{
-
-                $next_time = time()+$this->max_sleep_time;
-
-                if(empty($this->next_time)){
-
-                    $this->firstHandle();
-
-                }else{
-
-                    foreach($this->next_time as $task_id => $time){
-                        if($time<=time()){
-                            $task = $this->tasks[$task_id];
-                            $task->run();
-                            $this->next_time[$task_id] = $task->next();
+                        if (!empty($actions)) {
+                            $prefix = $controller->getUniqueId();
+                            foreach ($actions as $action) {
+                                $string = '  ' . $prefix . '/' . $action;
+                                $allActions[] = $string;
+                            }
                         }
 
-                        $next_time = $this->next_time[$task_id]<$next_time?$this->next_time[$task_id]:$next_time;
                     }
 
                 }
-
-
-
-                $sleep_time = $next_time-time();
-
-                $this->log("sleep_time:$sleep_time");
-
-                sleep($sleep_time >0?$sleep_time:$this->max_sleep_time);
-
-            }while(true);
-
-        }
-
-        /**
-         * 当系统第一次运行的时候，遍历并且保存下一次运行时间
-         */
-        public function firstHandle(){
-            foreach($this->tasks as $key=> $task){
-                $task->run();
-                $this->next_time[$key] = $task->next();
-
-                $this->log(get_class($task)."next_time:".$this->next_time[$key]);
             }
+
+            return $allActions;
         }
 
         /**
-         * 设置任务列表数据,
-         * @param $tasks array
+         * 获取控制器下所有的Actions
+         * @param Controller $controller the controller instance
+         * @return array all available action IDs.
+         */
+        public function getActions($controller)
+        {
+            $actions = array_keys($controller->actions());
+            $class = new \ReflectionClass($controller);
+            foreach ($class->getMethods() as $method) {
+                $name = $method->getName();
+                if ($name !== 'actions' && $method->isPublic() && !$method->isStatic() && strpos($name, 'action') === 0) {
+                    $actions[] = Inflector::camel2id(substr($name, 6), '-', true);
+                }
+            }
+            sort($actions);
+
+            return array_unique($actions);
+        }
+
+        /**
+         * 获取Console 系统下面的所有的控制器
+         * @return array
+         */
+        public function getControllers(){
+
+            $module = \Yii::$app;
+
+            $prefix = $module instanceof Application ? '' : $module->getUniqueID() . '/';
+            $controllerPath = $this->getControllerPath();
+
+            $commands = [];
+            if (is_dir($controllerPath)) {
+                $files = scandir($controllerPath);
+
+                foreach ($files as $file) {
+                    if (!empty($file) && substr_compare($file, 'Controller.php', -14, 14) === 0) {
+                        $controllerClass = $module->controllerNamespace . '\\' . substr(basename($file), 0, -4);
+
+                        if ($this->validateControllerClass($controllerClass)) {
+                            $commands[] = $prefix . Inflector::camel2id(substr(basename($file), 0, -14));
+                        }
+                    }
+                }
+            }
+
+
+            return $commands;
+        }
+
+        /**
+         * 获取当前Console系统下的控制器目录地址
+         * @return bool|string
+         */
+        public function getControllerPath(){
+            return \Yii::getAlias('@' . str_replace('\\', '/', $this->controllerNamespace));
+        }
+
+        /**
+         * 检测当前系统是否是完善的Console控制器程序
+         * @param $controllerClass
          * @return bool
-         * @throws \yii\base\InvalidConfigException
          */
-        public function setTasks($tasks){
-            if(!is_array($tasks)) return false;
-
-            foreach($tasks as $task){
-                $this->_register(\Yii::createObject($task));
-            }
-
-            return true;
-        }
-
-        /**
-         * 添加任务实例到定时任务系统中
-         * @param interfaceTask $task
-         */
-        public function _register(interfaceTask $task){
-            $this->tasks[] = $task;
-            return $this;
-        }
-
-        /**
-         * 日志显示
-         * @param $string
-         */
-        protected function log($string){
-            if(!defined('YII_DEBUG') ||  !YII_DEBUG)
+        protected function validateControllerClass($controllerClass)
+        {
+            if (class_exists($controllerClass)) {
+                $class = new \ReflectionClass($controllerClass);
+                return !$class->isAbstract() && $class->isSubclassOf('yii\console\Controller');
+            } else {
                 return false;
-
-            if(is_array($string)){
-                echo "(".getmypid().")";
-                print_r($string);
-            }else
-                echo getmypid().":".$string;
-
-            echo "\n";
-        }
-
-        /**
-         * 注册任务
-         * @param interfaceTask $task
-         * @throws Exception
-         */
-        public static function register(interfaceTask $task){
-            if(!self::$instance){
-                throw new Exception("Must init Cron instance!");
             }
-
-            self::$instance->_register($task);
         }
-
-        /**
-         * 运行任务
-         * @throws Exception
-         */
-        public static function run(){
-            if(!self::$instance){
-                throw new Exception("Must init Cron instance!");
-            }
-
-            self::$instance->handle();
-        }
-
-        /**
-         * 初始化Cron实例
-         * @param array $Configs
-         * @throws \yii\base\InvalidConfigException
-         */
-        public static function initCron($Configs = []){
-
-            $Configs['class'] = self::className();
-
-            self::$instance = \Yii::createObject($Configs);
-        }
-
 
     }
